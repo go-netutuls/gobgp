@@ -16,6 +16,9 @@ env:
  - SCENARIO=true
 
 matrix:
+  allow_failures:
+    - go: 1.3
+    - go: 1.4
   exclude:
     - go: 1.3
       env: SCENARIO=true
@@ -25,6 +28,8 @@ matrix:
       env: SCENARIO=true
     - go: tip
       env: SCENARIO=true
+
+go_import_path: github.com/osrg/gobgp
 
 script:
  - bash test/scenario_test/ci-scripts/travis-build-script.sh $SCENARIO

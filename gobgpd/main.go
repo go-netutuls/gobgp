@@ -159,7 +159,7 @@ func main() {
 		log.SetFormatter(&log.JSONFormatter{})
 	}
 
-	configCh := make(chan config.BgpConfigSet)
+	configCh := make(chan *config.BgpConfigSet)
 	if opts.Dry {
 		go config.ReadConfigfileServe(opts.ConfigFile, opts.ConfigType, configCh)
 		c := <-configCh
@@ -193,26 +193,33 @@ func main() {
 		go config.ReadConfigfileServe(opts.ConfigFile, opts.ConfigType, configCh)
 	}
 
-	var bgpConfig *config.Bgp = nil
-	var policyConfig *config.RoutingPolicy = nil
+	var c *config.BgpConfigSet = nil
 	for {
 		select {
 		case newConfig := <-configCh:
 			var added, deleted, updated []config.Neighbor
+			var updatePolicy bool
 
-			if bgpConfig == nil {
-				if err := bgpServer.SetGlobalType(newConfig.Bgp.Global); err != nil {
+			if c == nil {
+				c = newConfig
+				if err := bgpServer.SetGlobalType(newConfig.Global); err != nil {
 					log.Fatalf("failed to set global config: %s", err)
 				}
-				bgpConfig = &newConfig.Bgp
-				bgpServer.SetRpkiConfig(newConfig.Bgp.RpkiServers)
-				if err := bgpServer.SetBmpConfig(newConfig.Bgp.BmpServers); err != nil {
-					log.Fatalf("failed to set global config: %s", err)
+				if err := bgpServer.SetRpkiConfig(newConfig.RpkiServers); err != nil {
+					log.Fatalf("failed to set rpki config: %s", err)
 				}
-				if err := bgpServer.SetMrtConfig(newConfig.Bgp.MrtDump); err != nil {
-					log.Fatalf("failed to set global config: %s", err)
+				if err := bgpServer.SetBmpConfig(newConfig.BmpServers); err != nil {
+					log.Fatalf("failed to set bmp config: %s", err)
 				}
-				added = newConfig.Bgp.Neighbors
+				if err := bgpServer.SetMrtConfig(newConfig.MrtDump); err != nil {
+					log.Fatalf("failed to set mrt config: %s", err)
+				}
+				p := config.ConfigSetToRoutingPolicy(newConfig)
+				if err := bgpServer.SetRoutingPolicy(*p); err != nil {
+					log.Fatalf("failed to set routing policy: %s", err)
+				}
+
+				added = newConfig.Neighbors
 				if opts.GracefulRestart {
 					for i, n := range added {
 						if n.GracefulRestart.Config.Enabled {
@@ -220,31 +227,15 @@ func main() {
 						}
 					}
 				}
-				deleted = []config.Neighbor{}
-				updated = []config.Neighbor{}
-			} else {
-				bgpConfig, added, deleted, updated = config.UpdateConfig(bgpConfig, &newConfig.Bgp)
-			}
 
-			if policyConfig == nil {
-				policyConfig = &newConfig.Policy
-				// FIXME: Currently the following code
-				// is safe because the above
-				// SetRpkiConfig will be blocked
-				// because the length of rpkiConfigCh
-				// is zero. So server.GlobalRib is
-				// allocated before the above
-				// SetPolicy. But this should be
-				// handled more cleanly.
-				if err := bgpServer.SetRoutingPolicy(newConfig.Policy); err != nil {
-					log.Fatal(err)
-				}
 			} else {
-				if config.CheckPolicyDifference(policyConfig, &newConfig.Policy) {
+				added, deleted, updated, updatePolicy = config.UpdateConfig(c, newConfig)
+				if updatePolicy {
 					log.Info("Policy config is updated")
-					bgpServer.UpdatePolicy(newConfig.Policy)
-					policyConfig = &newConfig.Policy
+					p := config.ConfigSetToRoutingPolicy(newConfig)
+					bgpServer.UpdatePolicy(*p)
 				}
+				c = newConfig
 			}
 
 			for _, p := range added {
@@ -257,7 +248,25 @@ func main() {
 			}
 			for _, p := range updated {
 				log.Infof("Peer %v is updated", p.Config.NeighborAddress)
-				bgpServer.PeerUpdate(p)
+				u, _ := bgpServer.PeerUpdate(p)
+				updatePolicy = updatePolicy || u
+			}
+
+			if updatePolicy {
+				// TODO: we want to apply the new policies to the existing
+				// routes here. Sending SOFT_RESET_IN to all the peers works
+				// for the change of in and import policies. SOFT_RESET_OUT is
+				// necessary for the export policy but we can't blindly
+				// execute SOFT_RESET_OUT because we unnecessarily advertize
+				// the existing routes. Needs to investigate the changes of
+				// policies and handle only affected peers.
+				ch := make(chan *server.GrpcResponse)
+				bgpServer.GrpcReqCh <- &server.GrpcRequest{
+					RequestType: server.REQ_NEIGHBOR_SOFT_RESET_IN,
+					Name:        "all",
+					ResponseCh:  ch,
+				}
+				<-ch
 			}
 		case sig := <-sigCh:
 			switch sig {

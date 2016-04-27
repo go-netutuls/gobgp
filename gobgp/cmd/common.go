@@ -95,6 +95,7 @@ var actionOpts struct {
 	CommunityAction     string `long:"community" description:"specifying a community action of policy"`
 	MedAction           string `long:"med" description:"specifying a med action of policy"`
 	AsPathPrependAction string `long:"as-prepend" description:"specifying a as-prepend action of policy"`
+	NexthopAction       string `long:"next-hop" description:"specifying a next-hop action of policy"`
 }
 
 var mrtOpts struct {
@@ -275,6 +276,7 @@ type PeerConf struct {
 	LocalCap          []bgp.ParameterCapabilityInterface `json:"local_cap,omitempty"`
 	Holdtime          uint32                             `json:"holdtime,omitempty"`
 	KeepaliveInterval uint32                             `json:"keepalive_interval,omitempty"`
+	PrefixLimits      []*gobgpapi.PrefixLimit
 }
 
 type Peer struct {
@@ -295,12 +297,13 @@ func ApiStruct2Peer(p *gobgpapi.Peer) *Peer {
 		remoteCaps = append(remoteCaps, c)
 	}
 	conf := PeerConf{
-		RemoteIp:  net.ParseIP(p.Conf.NeighborAddress),
-		Id:        net.ParseIP(p.Conf.Id),
-		RemoteAs:  p.Conf.PeerAs,
-		LocalAs:   p.Conf.LocalAs,
-		RemoteCap: remoteCaps,
-		LocalCap:  localCaps,
+		RemoteIp:     net.ParseIP(p.Conf.NeighborAddress),
+		Id:           net.ParseIP(p.Conf.Id),
+		RemoteAs:     p.Conf.PeerAs,
+		LocalAs:      p.Conf.LocalAs,
+		RemoteCap:    remoteCaps,
+		LocalCap:     localCaps,
+		PrefixLimits: p.Conf.PrefixLimits,
 	}
 	return &Peer{
 		Conf:   conf,
@@ -438,9 +441,9 @@ func checkAddressFamily(def bgp.RouteFamily) (bgp.RouteFamily, error) {
 		rf = bgp.RF_IPv4_UC
 	case "ipv6", "v6", "6":
 		rf = bgp.RF_IPv6_UC
-	case "vpnv4", "vpn-ipv4":
+	case "ipv4-l3vpn", "vpnv4", "vpn-ipv4":
 		rf = bgp.RF_IPv4_VPN
-	case "vpnv6", "vpn-ipv6":
+	case "ipv6-l3vpn", "vpnv6", "vpn-ipv6":
 		rf = bgp.RF_IPv6_VPN
 	case "ipv4-labeled", "ipv4-labelled", "ipv4-mpls":
 		rf = bgp.RF_IPv4_MPLS
@@ -448,8 +451,10 @@ func checkAddressFamily(def bgp.RouteFamily) (bgp.RouteFamily, error) {
 		rf = bgp.RF_IPv6_MPLS
 	case "evpn":
 		rf = bgp.RF_EVPN
-	case "encap":
-		rf = bgp.RF_ENCAP
+	case "encap", "ipv4-encap":
+		rf = bgp.RF_IPv4_ENCAP
+	case "ipv6-encap":
+		rf = bgp.RF_IPv6_ENCAP
 	case "rtc":
 		rf = bgp.RF_RTC_UC
 	case "ipv4-flowspec", "ipv4-flow", "flow4":
